@@ -1,0 +1,109 @@
+
+
+rng=$RANDOM
+#rng=26133 Fix number here
+rg=nodejssb$rng
+location=southeastasia
+sbname=nodejsranger$rng
+fnappName=nodejssb$rng
+fnappStorageName=nodejssbstorage$rng
+queuename=data
+vnet=nodejssb$rng
+privateSubnet=privateEndpoint
+
+##Create RG and VNET If not existed
+##az group create --location $location --name $rg
+
+# az network vnet create \
+#     --name $vnet --resource-group $rg \
+#     --address-prefix 10.0.0.0/16 \
+#     --subnet-name $privateSubnet \
+#     --subnet-prefix 10.0.0.0/24
+
+# az network vnet subnet update \
+#     --name $privateSubnet \
+#     --resource-group $rg \
+#     --vnet-name $vnet \
+#     --disable-private-endpoint-network-policies true
+
+
+## Create ServiceBus namespace
+az servicebus namespace create \
+    --name $sbname \
+    --resource-group $rg \
+    --sku Premium
+
+## Create Queue
+az servicebus queue create \
+    --name $queuename --namespace-name $sbname \
+    --resource-group $rg \
+    --max-size 5120 \
+    --max-delivery-count 10 \
+    --enable-session true
+
+az servicebus namespace authorization-rule create \
+    --name $sbname \
+    --namespace-name $sbname \
+    --resource-group $rg \
+    --rights Manage Send Listen
+
+sbprimaryconn=$(az servicebus namespace authorization-rule keys list \
+    --resource-group $rg \
+    --namespace-name $sbname \
+    --name $sbname -o tsv --query primaryConnectionString)
+    
+## Create Storage Account for Functions App
+az storage account create \
+    --name $fnappStorageName --resource-group $rg \
+    --access-tier Hot --kind StorageV2 \
+    --sku Standard_LRS 
+
+## Create Functions App
+az functionapp plan create \
+    --name $fnappName \
+    --resource-group $rg \
+    --location $location \
+    --sku EP1
+
+azfnid=$(az functionapp create \
+    --plan $fnappName \
+    --name $fnappName  --functions-version 3 \
+    --os-type Windows --resource-group $rg \
+    --runtime node --storage-account $fnappStorageName \
+    --query 'id' \
+    --output tsv)
+
+az functionapp config appsettings set \
+    --name $fnappName \
+    --resource-group $rg \
+    --settings "nodejsranger26133_SERVICEBUS=$sbprimaryconn"
+
+
+
+
+## WIP for add all workload to Private Endpoint ###
+az network private-endpoint create \
+    --name enp-$fnappName \
+    --resource-group $rg \
+    --vnet-name $vnet --subnet $privateSubnet \
+    --private-connection-resource-id $azfnid \
+    --group-id sites \
+    --connection-name funcconn
+
+az network private-dns zone create \
+    --resource-group $rg \
+    --name "privatelink.azurewebsites.net"
+
+az network private-dns link vnet create \
+    --resource-group $rg \
+    --zone-name "privatelink.azurewebsites.net" \
+    --name MyDNSLink \
+    --virtual-network $vnet \
+    --registration-enabled false
+
+az network private-endpoint dns-zone-group create \
+    --resource-group $rg \
+   --endpoint-name enp-$fnappName \
+   --name $fnappName \
+   --private-dns-zone "privatelink.azurewebsites.net" \
+   --zone-name webapp
